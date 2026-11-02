@@ -2,7 +2,7 @@ name: Update site
 
 on:
   schedule:
-    - cron: "0 */3 * * *"
+    - cron: "30 1 * * *"
   workflow_dispatch:
 
 permissions:
@@ -23,14 +23,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install pillow
+        run: pip install pillow
+
       - name: Scrape telegram channels
         run: python3 scrape.py
 
-      - name: Save products file
+      - name: Save data files
         run: |
           git config user.name "bot"
           git config user.email "bot@users.noreply.github.com"
-          git add site/products.json
+          git add data/raw.json site/products.json site/config.json
           git diff --cached --quiet || git commit -m "update products"
           git push
 
