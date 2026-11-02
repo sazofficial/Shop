@@ -1,7 +1,12 @@
 {
-  "margin_percent": 20,
-  "min_margin": 50,
+  "slabs": [
+    {"upto": 100, "add": 50},
+    {"upto": 200, "add": 80},
+    {"upto": 500, "add": 150},
+    {"upto": 1000, "add": 400},
+    {"upto": 2000, "add": 700}
+  ],
   "days": 30,
-  "whatsapp": "91XXXXXXXXXX",
-  "shop_name": "My Shop"
+  "whatsapp": "918980161610",
+  "shop_name": "sazofficial"
 }
