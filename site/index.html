@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Shop</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,sans-serif;background:#f4f5f7;color:#111}
+header{background:#111;color:#fff;padding:12px;position:sticky;top:0;z-index:5}
+header h1{margin:0 0 8px;font-size:20px}
+.bar{display:flex;gap:8px}
+.bar input,.bar select{padding:10px;border-radius:8px;border:0;font-size:15px}
+.bar input{flex:1;min-width:0}
+#grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;padding:10px}
+@media(min-width:700px){#grid{grid-template-columns:repeat(4,1fr)}}
+.card{background:#fff;border-radius:10px;overflow:hidden;box-shadow:0 1px 3px #0002;cursor:pointer}
+.card img{width:100%;aspect-ratio:1;object-fit:cover;display:block;background:#ddd}
+.card .t{padding:8px;font-size:13px;height:50px;overflow:hidden}
+.card .p{padding:0 8px 10px;font-weight:700;font-size:18px;color:#0a7d2c}
+.more{display:block;margin:10px auto 30px;padding:12px 24px;border:0;border-radius:8px;background:#111;color:#fff;font-size:15px}
+.ov{display:none;position:fixed;inset:0;background:#000a;z-index:10;overflow:auto}
+.box{background:#fff;max-width:520px;margin:0 auto;min-height:100%;padding:14px;position:relative}
+.x{position:absolute;right:10px;top:10px;border:0;background:#eee;border-radius:50%;width:36px;height:36px;font-size:18px;z-index:2}
+.big{width:100%;border-radius:10px;display:block;margin-top:34px}
+.th{display:flex;gap:6px;overflow:auto;margin:8px 0}
+.th img{width:60px;height:60px;object-fit:cover;border-radius:6px;flex:none}
+video{width:100%;margin-top:8px;border-radius:10px}
+.pr{font-size:24px;font-weight:700;color:#0a7d2c;margin:10px 0}
+.desc{white-space:pre-line;font-size:14px;color:#444;margin-bottom:12px}
+label{display:block;font-size:13px;margin:10px 0 4px;color:#333}
+.box input,.box textarea{width:100%;padding:10px;border:1px solid #ccc;border-radius:8px;font-size:15px}
+.ob{width:100%;margin-top:16px;padding:14px;border:0;border-radius:10px;background:#25d366;color:#fff;font-size:16px;font-weight:700}
+.note{font-size:12px;color:#666;margin-top:8px;text-align:center}
+</style>
+</head>
+<body>
+<header>
+<h1 id="shop">Shop</h1>
+<div class="bar">
+<input id="q" placeholder="Product search karo..." oninput="apply()">
+<select id="s" onchange="apply()">
+<option value="n">Naya</option>
+<option value="l">Sasta</option>
+<option value="h">Mehenga</option>
+</select>
+</div>
+</header>
+<div id="grid"></div>
+<div id="more"></div>
+<div id="empty" style="display:none;text-align:center;padding:40px">Koi product nahi mila</div>
+<div id="m" class="ov" onclick="if(event.target==this)closeM()">
+<div class="box"><button class="x" onclick="closeM()">✕</button><div id="mc"></div></div>
+</div>
+<script>
+var P=[],C={whatsapp:"",shop_name:"Shop"},L=[],N=40,CUR=null;
+function $(i){return document.getElementById(i)}
+function esc(s){return String(s==null?"":s).replace(/[&<>"']/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]})}
+function load(u){return fetch(u+"?v="+Date.now()).then(function(r){return r.json()})}
+function apply(){
+  var q=$("q").value.toLowerCase().trim(),s=$("s").value;
+  L=P.filter(function(p){return !q||(p.title+" "+p.text).toLowerCase().indexOf(q)>-1});
+  if(s=="l")L.sort(function(a,b){return a.price-b.price});
+  else if(s=="h")L.sort(function(a,b){return b.price-a.price});
+  else L.sort(function(a,b){return a.date<b.date?1:-1});
+  N=40;render();
+}
+function render(){
+  var h="";
+  L.slice(0,N).forEach(function(p,i){
+    h+='<div class="card" onclick="openM('+i+')"><img loading="lazy" src="'+esc(p.images[0])+'"><div class="t">'+esc(p.title)+'</div><div class="p">₹'+p.price+'</div></div>';
+  });
+  $("grid").innerHTML=h;
+  $("more").innerHTML=L.length>N?'<button class="more" onclick="N+=40;render()">Aur products dikhao</button>':"";
+  $("empty").style.display=L.length?"none":"block";
+}
+function openM(i){
+  var p=L[i];CUR=p;
+  var g='<img id="big" class="big" src="'+esc(p.images[0])+'">';
+  if(p.images.length>1){
+    g+='<div class="th">';
+    p.images.forEach(function(u){g+='<img src="'+esc(u)+'" onclick="$(\'big\').src=this.src">'});
+    g+='</div>';
+  }
+  if(p.video)g+='<video controls playsinline preload="none" src="'+esc(p.video)+'"></video>';
+  g+='<h3>'+esc(p.title)+'</h3><div class="pr">₹'+p.price+'</div>';
+  if(p.text)g+='<div class="desc">'+esc(p.text)+'</div>';
+  g+='<label>Aapka naam</label><input id="fn">';
+  g+='<label>Mobile number</label><input id="fm" type="tel" maxlength="10">';
+  g+='<label>Poora address</label><textarea id="fa" rows="3"></textarea>';
+  g+='<label>Pincode</label><input id="fp" type="tel" maxlength="6">';
+  g+='<label>Quantity</label><input id="fq" type="number" min="1" value="1">';
+  g+='<label>Size / colour / note (optional)</label><input id="ft">';
+  g+='<button class="ob" onclick="order()">COD Order karo (WhatsApp par)</button>';
+  g+='<div class="note">Cash on Delivery. Order WhatsApp par confirm hoga.</div>';
+  $("mc").innerHTML=g;
+  $("m").style.display="block";
+  document.body.style.overflow="hidden";
+}
+function closeM(){
+  $("m").style.display="none";
+  document.body.style.overflow="";
+}
+function order(){
+  var n=$("fn").value.trim(),m=$("fm").value.trim(),a=$("fa").value.trim();
+  var pc=$("fp").value.trim(),q=parseInt($("fq").value)||1,nt=$("ft").value.trim();
+  if(n.length<2){alert("Apna naam likho");return}
+  if(!/^[6-9][0-9]{9}$/.test(m)){alert("10 digit ka sahi mobile number likho");return}
+  if(a.length<10){alert("Poora address likho");return}
+  if(!/^[0-9]{6}$/.test(pc)){alert("6 digit ka pincode likho");return}
+  if(q<1)q=1;
+  var t=CUR.price*q;
+  var msg="*New COD Order*\n\nProduct: "+CUR.title+"\nProduct ID: "+CUR.id+
+    "\nPrice: Rs "+CUR.price+" x "+q+" = Rs "+t+
+    "\n\nNaam: "+n+"\nMobile: "+m+"\nAddress: "+a+"\nPincode: "+pc+
+    (nt?"\nNote: "+nt:"")+"\nPayment: Cash on Delivery";
+  window.open("https://wa.me/"+C.whatsapp+"?text="+encodeURIComponent(msg),"_blank");
+}
+function start(){
+  load("config.json").then(function(c){
+    C=c;
+    $("shop").textContent=c.shop_name;
+    document.title=c.shop_name;
+  }).catch(function(){});
+  load("products.json").then(function(d){P=d;apply()}).catch(function(){P=[];apply()});
+}
+start();
+</script>
+</body>
+</html>
