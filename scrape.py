@@ -5,9 +5,15 @@ import time
 import os
 import io
 import math
+import hashlib
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from PIL import Image
+
+START = time.time()
+FETCH_LIMIT = 9 * 60
+WORK_LIMIT = 19 * 60
+MAXP_A = 12
 
 RAW = "data/raw.json"
 OUT = "site/products.json"
@@ -21,20 +27,54 @@ DEFAULT_SLABS = [
     {"upto": 2000, "add": 700},
 ]
 
+DEFAULT_BLOCK = [
+    "stock", "in stock", "instock", "out of stock", "sold out", "restock",
+    "available", "dispatch", "address", "shop no", "near", "road", "market",
+    "floor", "pincode", "gst", "wholesale", "wholesaler", "wholeseller",
+    "supplier", "manufacturer", "enterprise", "enterprises", "impex", "exim",
+    "traders", "surat", "gujarat", "mumbai", "delhi", "contact", "whatsapp",
+    "telegram", "join", "order", "booking", "cod", "shipping", "delivery",
+    "moq", "minimum", "mrp", "rate", "price", "dm", "call",
+]
 
-def get(url):
+GENERIC = [
+    "wholesale", "wholesaler", "wholeseller", "wholsale", "enterprises",
+    "enterprise", "ecommerce", "ecommerse", "import", "export", "impex",
+    "exim", "store", "mart", "shop", "zone", "hub", "surat", "bazaar",
+    "bazar", "traders", "trading", "retail", "online", "official", "global",
+    "world", "sales",
+]
+
+BAD = re.compile(
+    r"(₹|\brs\.?\b|\binr\b|/-|t\.me|https?://|www\.|@\w+|\+?\d[\d\s-]{8,}\d)",
+    re.I,
+)
+
+
+def elapsed():
+    return time.time() - START
+
+
+def get(url, timeout=15):
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(req, timeout=30) as r:
+    with urllib.request.urlopen(req, timeout=timeout) as r:
         return r.read()
 
 
-def fetch(handle):
-    return get("https://t.me/s/" + handle).decode("utf-8", "ignore")
+def fetch_page(h, before=None):
+    url = "https://t.me/s/" + h
+    if before:
+        url += "?before=%d" % before
+    try:
+        return get(url).decode("utf-8", "ignore")
+    except Exception as e:
+        print(h, "fetch error:", e)
+        return None
 
 
 def load_settings():
-    s = {"slabs": DEFAULT_SLABS, "days": 30,
-         "whatsapp": "", "shop_name": "Shop"}
+    s = {"slabs": DEFAULT_SLABS, "days": 30, "whatsapp": "",
+         "shop_name": "Shop", "order_url": "", "block_words": []}
     try:
         s.update(json.load(open("settings.json", encoding="utf-8")))
     except Exception as e:
@@ -55,25 +95,50 @@ def clean(t):
     return html.unescape(t).strip()
 
 
-BAD = re.compile(
-    r"(₹|\brs\.?\b|\binr\b|price|rate\s*[:=]|/-|moq|wholesale|whatsapp|"
-    r"contact|call us|call now|order now|bulk order|booking|join|t\.me|"
-    r"https?://|www\.|@\w+|\+?\d[\d\s-]{8,}\d)",
-    re.I,
-)
+def handle_cores(handles):
+    cores = set()
+    for h in handles:
+        full = re.sub(r"[^a-z]", "", h.lower())
+        s = full
+        for g in GENERIC:
+            s = s.replace(g, "")
+        if len(s) >= 6:
+            cores.add(s)
+        if len(full) >= 6:
+            cores.add(full)
+    return cores
 
 
-def clean_text(text):
-    lines = [l.strip() for l in text.split("\n")]
-    good = [l for l in lines if l and not BAD.search(l)]
-    return "\n".join(good)[:600]
+def clean_text(text, cores, block_re):
+    good = []
+    for line in text.split("\n"):
+        l = line.strip()
+        if not l:
+            continue
+        low = l.lower()
+        flat = re.sub(r"[^a-z]", "", low)
+        if BAD.search(l) or block_re.search(low):
+            continue
+        if any(c in flat for c in cores):
+            continue
+        good.append(l)
+    return "\n".join(good)[:500]
 
 
 def find_price(text):
-    m = re.search(r"(?:₹|rs\.?|inr)\s*:?\s*(\d{2,6})", text, re.I)
-    if not m:
-        m = re.search(r"(\d{2,6})\s*(?:/-|₹|rs\b)", text, re.I)
-    return int(m.group(1)) if m else None
+    found = []
+    pats = [
+        r"(?:₹|rs\.?|inr)\s*:?\s*(\d{2,6})",
+        r"(\d{2,6})\s*(?:/-|₹|rs\b)",
+        r"@\s*(\d{2,5})\b",
+        r"(?:price|rate)\s*[:=\-]?\s*(\d{2,6})",
+    ]
+    for p in pats:
+        for m in re.finditer(p, text, re.I):
+            v = int(m.group(1))
+            if 20 <= v <= 100000:
+                found.append(v)
+    return min(found) if found else None
 
 
 def title_key(text):
@@ -93,13 +158,13 @@ def dhash(url):
         for r in range(8):
             for c in range(8):
                 bits = (bits << 1) | (1 if px[r * 9 + c] > px[r * 9 + c + 1] else 0)
-        return format(bits, "x")
+        return bits
     except Exception:
         return None
 
 
 def dist(a, b):
-    return bin(int(a, 16) ^ int(b, 16)).count("1")
+    return bin(a ^ b).count("1")
 
 
 def parse_date(s):
@@ -109,13 +174,17 @@ def parse_date(s):
         return None
 
 
-def parse(handle, page):
+def parse_page(h, page):
+    nums = [int(x) for x in re.findall(r'data-post="[^"/]+/(\d+)"', page)]
+    dates = [parse_date(x) for x in
+             re.findall(r'<time[^>]*datetime="([^"]+)"', page)]
+    dates = [d for d in dates if d]
     items = []
     for b in page.split("tgme_widget_message_wrap")[1:]:
-        m = re.search(r'data-post="([^"]+)"', b)
+        m = re.search(r'data-post="[^"/]+/(\d+)"', b)
         if not m:
             continue
-        post = m.group(1)
+        num = int(m.group(1))
         images = re.findall(
             r"tgme_widget_message_photo_wrap[^>]*background-image:url\('([^']+)'\)", b)
         videos = re.findall(r'<video[^>]*src="([^"]+)"', b)
@@ -131,12 +200,54 @@ def parse(handle, page):
         if not images:
             continue
         items.append({
-            "id": post, "channel": handle, "text": text,
-            "price": find_price(text), "images": images,
-            "video": videos[0] if videos else "",
-            "date": date, "link": "https://t.me/" + post,
+            "id": "%s/%d" % (h, num), "num": num, "channel": h,
+            "text": text, "images": images,
+            "video": videos[0] if videos else "", "date": date,
         })
-    return items
+    return {"items": items,
+            "min": min(nums) if nums else None,
+            "max": max(nums) if nums else None,
+            "oldest": min(dates) if dates else None}
+
+
+def close(a, b):
+    da, db = parse_date(a), parse_date(b)
+    return bool(da and db and abs((da - db).total_seconds()) <= 120)
+
+
+def group(items, h):
+    uniq = {}
+    for it in items:
+        uniq[it["num"]] = it
+    out = []
+    for it in sorted(uniq.values(), key=lambda x: x["num"]):
+        g = out[-1] if out else None
+        if (g and it["num"] == g["last"] + 1 and close(g["date"], it["date"])
+                and (not it["text"] or not g["text"])):
+            for u in it["images"]:
+                if u not in g["images"]:
+                    g["images"].append(u)
+            g["posts"].append(it["id"])
+            g["last"] = it["num"]
+            if not g["text"]:
+                g["text"] = it["text"]
+            if not g["video"]:
+                g["video"] = it["video"]
+            if it["date"] > g["date"]:
+                g["date"] = it["date"]
+        else:
+            out.append({
+                "channel": h, "posts": [it["id"]], "last": it["num"],
+                "text": it["text"], "images": list(it["images"]),
+                "video": it["video"], "date": it["date"],
+            })
+    for g in out:
+        g["images"] = g["images"][:8]
+    return out
+
+
+def make_id(pid):
+    return "p" + hashlib.sha1(pid.encode()).hexdigest()[:8]
 
 
 def main():
@@ -145,72 +256,156 @@ def main():
     os.makedirs("site", exist_ok=True)
     os.makedirs("data", exist_ok=True)
 
-    products, skipped = [], set()
-    if os.path.exists(RAW):
-        try:
-            raw = json.load(open(RAW, encoding="utf-8"))
-            products = raw.get("products", [])
-            skipped = set(raw.get("skipped", []))
-        except Exception:
-            pass
-    seen = set()
-    for p in products:
-        seen.update(p.get("posts", []))
-
     handles = []
     for line in open("channels.txt"):
         h = line.strip()
-        if h and h not in handles:
+        if h and h.lower() not in [x.lower() for x in handles]:
             handles.append(h)
+    hset = {h.lower() for h in handles}
+    cores = handle_cores(handles)
+    words = DEFAULT_BLOCK + [w.lower() for w in st.get("block_words", []) if w]
+    block_re = re.compile(
+        r"(?<![a-z0-9])(?:" + "|".join(re.escape(w) for w in words) + r")(?![a-z0-9])")
 
-    posts, failed = [], []
-    for h in handles:
+    products, skipped, state, pending = [], {}, {}, []
+    if os.path.exists(RAW):
         try:
-            got = parse(h, fetch(h))
-            posts.extend(got)
-            print(h, "->", len(got), "posts")
+            raw = json.load(open(RAW, encoding="utf-8"))
+            if raw.get("version") == 2:
+                products = raw["products"]
+                skipped = dict.fromkeys(raw.get("skipped", []))
+                state = raw.get("state", {})
+                pending = raw.get("pending", [])
         except Exception as e:
-            print(h, "FAILED:", e)
-            failed.append(h)
-        time.sleep(1)
+            print("raw.json problem:", e)
 
-    posts.sort(key=lambda x: x["date"])
+    pending = [g for g in pending if g["channel"].lower() in hset]
+    for p in products:
+        p["sources"] = {c: s for c, s in p["sources"].items() if c.lower() in hset}
+    products = [p for p in products if p["sources"]]
+
+    seen = set(skipped.keys())
+    for p in products:
+        seen.update(p["posts"])
+    for g in pending:
+        seen.update(g["posts"])
+
+    fetched = {h: [] for h in handles}
+    failed = []
+
+    for h in handles:
+        s = state.setdefault(h, {"newest": 0, "cursor": None, "done": False})
+        before, top, lowest = None, None, None
+        for _ in range(MAXP_A):
+            if elapsed() > FETCH_LIMIT:
+                break
+            page = fetch_page(h, before)
+            if page is None:
+                failed.append(h)
+                break
+            r = parse_page(h, page)
+            if r["min"] is None:
+                if before is None:
+                    print(h, "has no public posts")
+                s["done"] = True
+                break
+            fetched[h] += r["items"]
+            top = r["max"] if top is None else max(top, r["max"])
+            lowest = r["min"] if lowest is None else min(lowest, r["min"])
+            before = r["min"]
+            if r["min"] <= s["newest"]:
+                break
+            if r["oldest"] and r["oldest"] < limit:
+                if s["cursor"] is None:
+                    s["done"] = True
+                break
+            time.sleep(0.3)
+        if top:
+            s["newest"] = max(s["newest"], top)
+        if s["cursor"] is None and lowest is not None:
+            s["cursor"] = lowest
+        print(h, "-> new posts fetched:", len(fetched[h]))
+
+    fails = {}
+    while elapsed() < FETCH_LIMIT:
+        todo = [h for h in handles
+                if not state[h]["done"] and state[h]["cursor"]
+                and fails.get(h, 0) < 3]
+        if not todo:
+            break
+        for h in todo:
+            if elapsed() >= FETCH_LIMIT:
+                break
+            s = state[h]
+            page = fetch_page(h, s["cursor"])
+            if page is None:
+                fails[h] = fails.get(h, 0) + 1
+                continue
+            r = parse_page(h, page)
+            if r["min"] is None:
+                s["done"] = True
+                continue
+            fetched[h] += r["items"]
+            s["cursor"] = r["min"]
+            if (r["oldest"] and r["oldest"] < limit) or r["min"] <= 1:
+                s["done"] = True
+            time.sleep(0.3)
+
+    for h, items in fetched.items():
+        for g in group(items, h):
+            if all(pp in seen for pp in g["posts"]):
+                continue
+            pending.append(g)
+            seen.update(g["posts"])
+
+    pending.sort(key=lambda g: g["date"], reverse=True)
+    rest = []
     new_count = upd_count = 0
-    for it in posts:
-        if it["id"] in seen or it["id"] in skipped:
+    for i, g in enumerate(pending):
+        if elapsed() > WORK_LIMIT:
+            rest = pending[i:]
+            break
+        d = parse_date(g["date"])
+        price = find_price(g["text"])
+        if not d or d < limit or price is None or not g["images"]:
+            for pp in g["posts"]:
+                skipped[pp] = None
             continue
-        d = parse_date(it["date"])
-        if not d or d < limit or it["price"] is None:
-            skipped.add(it["id"])
-            continue
-        ctext = clean_text(it["text"])
-        h = dhash(it["images"][0])
+        ctext = clean_text(g["text"], cores, block_re)
+        h = dhash(g["images"][0])
         key = title_key(ctext)
-        src = {"price": it["price"], "date": it["date"],
-               "post": it["id"], "link": it["link"]}
+        src = {"price": price, "date": g["date"], "post": g["posts"][0]}
         match = None
         for p in products:
-            if h and p.get("hash") and dist(h, p["hash"]) <= 8:
+            if h is not None and any(dist(h, x) <= 10 for x in p["hashes"]):
                 match = p
                 break
             if key and key == p.get("key"):
                 match = p
                 break
         if match:
-            old = match["sources"].get(it["channel"])
-            if not old or parse_date(it["date"]) >= parse_date(old["date"]):
-                match["sources"][it["channel"]] = src
-            match["posts"].append(it["id"])
+            old = match["sources"].get(g["channel"])
+            if not old or parse_date(g["date"]) >= parse_date(old["date"]):
+                match["sources"][g["channel"]] = src
+            match["posts"] += g["posts"]
+            if h is not None and h not in match["hashes"]:
+                match["hashes"] = (match["hashes"] + [h])[-4:]
+            if len(g["images"]) > len(match["images"]):
+                match["images"] = g["images"]
+            if g["video"] and not match["video"]:
+                match["video"] = g["video"]
+            if len(g["text"]) > len(match["raw"]):
+                match["raw"] = g["text"][:1500]
             upd_count += 1
         else:
-            title = ctext.split("\n")[0][:80] if ctext else "Product"
             products.append({
-                "pid": it["id"].replace("/", "_"),
-                "hash": h, "key": key, "title": title, "text": ctext,
-                "images": it["images"][:5], "video": it["video"],
-                "sources": {it["channel"]: src}, "posts": [it["id"]],
+                "pid": g["posts"][0], "hashes": [h] if h is not None else [],
+                "key": key, "raw": g["text"][:1500],
+                "images": g["images"], "video": g["video"],
+                "sources": {g["channel"]: src}, "posts": list(g["posts"]),
             })
             new_count += 1
+    pending = rest
 
     for p in products:
         p["sources"] = {c: s for c, s in p["sources"].items()
@@ -220,28 +415,38 @@ def main():
     out = []
     hidden = 0
     for p in products:
-        cost = max(s["price"] for s in p["sources"].values())
-        sell = sell_price(cost, st["slabs"])
+        latest = max(p["sources"].values(), key=lambda s: parse_date(s["date"]))
+        sell = sell_price(latest["price"], st["slabs"])
         if sell is None:
             hidden += 1
             continue
+        text = clean_text(p["raw"], cores, block_re)
+        title = text.split("\n")[0][:70] if text else "New Arrival"
         out.append({
-            "id": p["pid"], "title": p["title"], "text": p["text"],
+            "id": make_id(p["pid"]), "title": title, "text": text,
             "images": p["images"], "video": p["video"], "price": sell,
-            "date": max(s["date"] for s in p["sources"].values()),
+            "date": latest["date"],
         })
     out.sort(key=lambda x: x["date"], reverse=True)
 
-    json.dump({"products": products, "skipped": sorted(skipped)[-5000:]},
+    json.dump({"version": 2, "products": products,
+               "skipped": list(skipped.keys())[-20000:],
+               "state": state, "pending": pending},
               open(RAW, "w", encoding="utf-8"), ensure_ascii=False)
     json.dump(out, open(OUT, "w", encoding="utf-8"), ensure_ascii=False)
-    json.dump({"whatsapp": st["whatsapp"], "shop_name": st["shop_name"]},
+    json.dump({"whatsapp": st["whatsapp"], "shop_name": st["shop_name"],
+               "order_url": st["order_url"]},
               open(CONF, "w", encoding="utf-8"), ensure_ascii=False)
-    print("DONE. new:", new_count, "price-updates:", upd_count,
+
+    backlog = len([h for h in handles if not state[h]["done"]])
+    print("DONE. new:", new_count, "merged-duplicates:", upd_count,
           "live:", len(out), "hidden(>2000):", hidden,
-          "failed channels:", len(failed))
-    if failed:
-        print("Failed:", ", ".join(failed))
+          "| waiting to process:", len(pending),
+          "| channels still backfilling:", backlog,
+          "| failed:", len(failed),
+          "| minutes used:", round(elapsed() / 60, 1))
+    if pending or backlog:
+        print("PARTIAL: run again or wait for the next daily run to finish the rest")
 
 
 main()
