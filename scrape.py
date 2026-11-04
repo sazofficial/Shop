@@ -72,6 +72,8 @@ SECRET = re.compile(
     r"AIza[0-9A-Za-z\-_]{35})"
 )
 
+CODE_PREFIX = re.compile(r"^\s*[A-Za-z]{2,4}[\s\-_:#|]*\d{1,5}\s*[\-_:|]?\s*")
+
 
 def redact(t):
     if not t:
@@ -197,31 +199,54 @@ def clean_text(text, ch, ctx):
 
 
 def find_price(text):
-    pats = [
-        r"(?:₹|rs\.?|inr)\s*:?\s*(\d{2,6})",
-        r"(\d{2,6})\s*(?:/-|₹|rs\b)",
-        r"@\s*(\d{2,5})\b",
-        r"(?:price|rate)\s*[:=\-]?\s*(\d{2,6})",
-    ]
-    cands, loose = [], []
-    for p in pats:
-        for m in re.finditer(p, text, re.I):
-            v = int(m.group(1))
-            if not 20 <= v <= 100000:
-                continue
-            loose.append(v)
-            before = text[max(0, m.start() - 14):m.start()].lower()
-            after = text[m.end():m.end() + 10]
-            if re.search(r"mrp|m\.r\.p|moq|qty|size|set of|pack of|box of|"
-                         r"dozen|worth|upto|up to", before):
-                continue
-            if re.match(r"\s*(?:pcs|pc|piece|pieces|pis|mtr|meter|metre|kg|gm|"
-                        r"ml|set|pack|inch|cm|mm|ft)\b", after, re.I):
-                continue
-            cands.append(v)
-    if cands:
-        return min(cands)
-    return min(loose) if loose else None
+    def _valid(m):
+        before = text[max(0, m.start() - 20):m.start()].lower()
+        after = text[m.end():m.end() + 12]
+        if re.search(r"(?:mrp|m\.r\.p|moq|qty|minimum|set\s+of|pack\s+of|"
+                     r"box\s+of|dozen|worth|upto|up\s*to)", before):
+            return False
+        if re.match(r"\s*(?:pcs|pc|piece|pieces|pis|mtr|meter|metre|kg|gm|"
+                    r"ml|set|pack|inch|cm|mm|ft)\b", after, re.I):
+            return False
+        return True
+
+    def _collect(pats):
+        vals = []
+        for p in pats:
+            for m in re.finditer(p, text, re.I):
+                v = int(m.group(1))
+                if 20 <= v <= 100000 and _valid(m):
+                    vals.append(v)
+        return vals
+
+    for tier in (
+        [
+            r"(?:₹|rs\.?|inr)\s*:?\s*(\d{2,6})",
+            r"(\d{2,6})\s*(?:/-|₹|rs\b|rupees?\b)",
+        ],
+        [
+            r"(?:price|rate|selling|our\s*price)\s*[:=\-]?\s*(?:₹|rs\.?)?\s*(\d{2,6})",
+            r"\b(\d{2,6})\s*(?:each|per\s*(?:pc|piece|pcs?|kg|mtr))\b",
+        ],
+        [
+            r"@\s*(\d{2,5})\b",
+        ],
+    ):
+        vals = _collect(tier)
+        if vals:
+            return min(vals)
+    return None
+
+
+def clean_name(text):
+    lines = [l.strip() for l in text.split("\n") if l.strip()]
+    if not lines:
+        return "New Arrival"
+    for line in lines:
+        stripped = CODE_PREFIX.sub("", line).strip()
+        if len(stripped) >= 3:
+            return stripped[:70]
+    return lines[0][:70]
 
 
 def norm_unit(u):
@@ -406,6 +431,26 @@ def main():
                 print("Old data format found, starting fresh")
         except Exception as e:
             print("raw.json problem:", e)
+
+    price_fixed = 0
+    fallback_dt = datetime(1970, 1, 1, tzinfo=timezone.utc)
+    for p in products:
+        srcs = p.get("sources", {})
+        txt = p.get("raw", "")
+        ch = p.get("raw_ch")
+        if not srcs or not txt or ch not in srcs:
+            continue
+        try:
+            latest = max(srcs, key=lambda c: parse_date(srcs[c].get("date", "")) or fallback_dt)
+        except Exception:
+            latest = ch
+        if latest != ch:
+            continue
+        new_p = find_price(txt)
+        if new_p and new_p != (srcs[ch].get("price") or 0):
+            srcs[ch]["price"] = new_p
+            price_fixed += 1
+    print("price-migration fixed:", price_fixed, "products")
 
     pending = [g for g in pending if g["channel"].lower() in hset]
     for p in products:
@@ -605,7 +650,7 @@ def main():
             continue
         ch = p.get("raw_ch") or next(iter(p["sources"]))
         text = clean_text(p["raw"], ch, ctx)
-        title = text.split("\n")[0][:70] if text else "New Arrival"
+        title = clean_name(text)
         out.append({
             "id": make_id(p["pid"]), "title": title, "text": text,
             "images": p["images"], "video": p["video"], "price": sell,
@@ -634,6 +679,7 @@ def main():
     boiler_n = sum(len(v) for v in ctx["boiler"].values())
     print("DONE. new:", new_count, "exact-duplicates-merged:", upd_count,
           "live:", len(out), "hidden(>2000):", hidden,
+          "| price-fixed:", price_fixed,
           "| skipped(no working photo):", bad_imgs,
           "| removed(dead photo):", removed,
           "| waiting to process:", len(pending),
