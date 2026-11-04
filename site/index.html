@@ -90,6 +90,7 @@ label{display:block;font-size:13px;font-weight:600;margin:12px 0 5px;color:#3341
 .note{font-size:12px;color:var(--muted);text-align:center;margin-top:10px}
 .okc{width:72px;height:72px;border-radius:50%;background:var(--ok);color:#fff;font-size:38px;display:flex;align-items:center;justify-content:center;margin:24px auto 14px}
 .muted{color:var(--muted);font-size:14.5px}
+.wh{display:inline-block;background:#fef3c7;color:#92400e;border:1px solid #fbbf24;border-radius:6px;padding:4px 10px;font-size:12.5px;font-weight:600;margin:0 0 14px}
 footer{text-align:center;color:var(--muted);font-size:12.5px;padding:24px 10px 30px}
 </style>
 </head>
@@ -189,6 +190,7 @@ function showProduct(p){
     '<div class="pg"><div><div class="galw"><div class="car" id="car">'+sl.join("")+'</div>'+arrows+'</div>'+dots+'</div>'+
     '<div class="info"><h1>'+esc(p.title)+'</h1><div class="price">'+inr(p.price)+'</div>'+
     '<div class="cod">&#10004; Cash on Delivery available</div>'+
+    (location.search.indexOf("saz97")>-1&&p.wholesaler?'<div class="wh">Wholesaler: '+esc(p.wholesaler)+'</div>':"")+
     (p.text?'<div class="desc">'+esc(p.text)+'</div>':"")+
     '<a class="btn inl" href="#c/'+p.id+'">Buy Now</a></div></div>'+
     (sim?'<h2 class="sh">You may also like</h2><div id="grid2">'+sim+'</div>':"")+'</div>'+
