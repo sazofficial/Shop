@@ -211,11 +211,11 @@ def clean_text(text, ch, ctx):
 def find_price(text):
     def _valid(m):
         start = m.start()
-        before_char = text[start - 1] if start > 0 else ""
-        before2 = text[start - 2] if start > 1 else ""
-        if before_char.isalpha():
+        bc = text[start - 1] if start > 0 else ""
+        b2 = text[start - 2] if start > 1 else ""
+        if bc.isalpha():
             return False
-        if before_char == "-" and before2.isalpha():
+        if bc == "-" and b2.isalpha():
             return False
         before = text[max(0, start - 20):start].lower()
         after = text[m.end():m.end() + 12]
@@ -266,9 +266,50 @@ def clean_name(text):
         stripped = BRAND_PREFIX.sub("", line).strip()
         stripped = CODE_PREFIX.sub("", stripped).strip()
         stripped = stripped.strip(" -:|#")
-        if len(stripped) >= 3:
+        if len(stripped) >= 3 and re.search(r"[a-zA-Z]{2,}", stripped):
             return stripped[:70]
     return lines[0][:70]
+
+
+CAT_RULES = [
+    ("Watches", ["watch", "smartwatch", "smart watch", "wrist watch"]),
+    ("Jewellery", ["jewel", "jewellery", "jewelry", "kundan", "necklace",
+                   "earring", "bangle", "bracelet", "mangalsutra", "payal",
+                   "anklet", "ring", "pendant", "chain set"]),
+    ("Footwear", ["shoe", "shoes", "sandal", "slipper", "footwear", "heel",
+                  "sneaker", "loafer", "flip flop", "bellie", "belly"]),
+    ("Bags", ["bag", "bags", "handbag", "purse", "wallet", "backpack",
+              "sling bag", "clutch", "pouch", "trolley"]),
+    ("Kids", ["kids", "kid", "baby", "babies", "child", "children", "toy",
+              "toys", "infant", "newborn"]),
+    ("Beauty", ["beauty", "cosmetic", "makeup", "make up", "lipstick",
+                "kajal", "eyeliner", "face wash", "cream", "lotion",
+                "perfume", "serum", "shampoo", "hair oil", "sunscreen",
+                "rose water", "foundation", "nail polish", "mehndi"]),
+    ("Electronics", ["mobile", "smartphone", "charger", "cable", "earphone",
+                     "headphone", "earbuds", "tws", "speaker", "bluetooth",
+                     "power bank", "led light", "lamp", "torch", "trimmer",
+                     "hairdryer", "usb", "otg"]),
+    ("Home", ["home", "kitchen", "cookware", "utensil", "container",
+              "bottle", "dinner set", "bed sheet", "bedsheet", "pillow",
+              "curtain", "towel", "rug", "mat", "mop", "cleaning", "dish",
+              "soap", "detergent", "storage", "organizer", "wallpaper"]),
+    ("Fashion", ["saree", "sari", "kurta", "kurti", "lehenga", "dress",
+                 "shirt", "tshirt", "t-shirt", "jeans", "pant", "trouser",
+                 "top", "blouse", "leggings", "dupatta", "salwar", "gown",
+                 "frock", "suit", "night suit", "nighty", "bra", "panty",
+                 "underwear", "innerwear", "shorts", "skirt", "jacket",
+                 "sweater", "hoodie"]),
+]
+
+
+def detect_category(title, text):
+    blob = ((title or "") + " " + (text or "")[:400]).lower()
+    for cat, words in CAT_RULES:
+        for w in words:
+            if re.search(r"(?<![a-z])" + re.escape(w) + r"(?![a-z])", blob):
+                return cat
+    return "Other"
 
 
 def norm_unit(u):
@@ -459,7 +500,6 @@ def main():
     for p in products:
         srcs = p.get("sources", {})
         txt = p.get("raw", "")
-        ch = p.get("raw_ch")
         if not srcs or not txt:
             continue
         try:
@@ -678,9 +718,10 @@ def main():
             "id": make_id(p["pid"]), "title": title, "text": text,
             "images": p["images"], "video": p["video"], "price": sell,
             "date": latest["date"], "wholesaler": ch,
+            "category": detect_category(title, text),
         })
     out.sort(key=lambda x: x["date"], reverse=True)
-    
+
     for p in products:
         p["raw"] = redact(p.get("raw", ""))
     for g in pending:
