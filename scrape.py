@@ -7,13 +7,17 @@ import io
 import math
 import hashlib
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from PIL import Image
 
 START = time.time()
-FETCH_LIMIT = 9 * 60
-WORK_LIMIT = 19 * 60
+FETCH_LIMIT = 8 * 60
+WORK_LIMIT = 16 * 60
 MAXP_A = 12
+BATCH = 24
+RECHECK = 120
+VERSION = 5
 
 RAW = "data/raw.json"
 OUT = "site/products.json"
@@ -45,8 +49,18 @@ GENERIC = [
     "world", "sales",
 ]
 
+COMMON = {
+    "fashion", "ladies", "gents", "kids", "mens", "women", "womens", "fancy",
+    "collection", "premium", "quality", "products", "product", "items",
+    "mobile", "accessories", "electronics", "garments", "home", "kitchen",
+    "baby", "toys", "gift", "gifts", "general", "gadgets", "watches",
+    "jewellery", "jewelry", "bags", "shoes", "wear", "style", "trendy",
+    "new", "latest", "best", "super", "business", "market", "deals", "deal",
+    "mega", "smart", "king", "city", "india", "indian", "digital",
+}
+
 BAD = re.compile(
-    r"(₹|\brs\.?\b|\binr\b|/-|t\.me|https?://|www\.|@\w+|\+?\d[\d\s-]{8,}\d)",
+    r"(₹|\brs\.?\b|\binr\b|/-|t\.me|https?://|www\.|@\w+|\+?\d[\d\s.\-()]{8,}\d)",
     re.I,
 )
 
@@ -55,7 +69,7 @@ def elapsed():
     return time.time() - START
 
 
-def get(url, timeout=15):
+def get(url, timeout=12):
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return r.read()
@@ -66,7 +80,7 @@ def fetch_page(h, before=None):
     if before:
         url += "?before=%d" % before
     try:
-        return get(url).decode("utf-8", "ignore")
+        return get(url, 15).decode("utf-8", "ignore")
     except Exception as e:
         print(h, "fetch error:", e)
         return None
@@ -109,50 +123,134 @@ def handle_cores(handles):
     return cores
 
 
-def clean_text(text, cores, block_re):
+def line_flat(l):
+    return re.sub(r"[^a-z0-9]", "", l.lower())
+
+
+def build_boiler(corpus):
+    out = {}
+    for ch, texts in corpus.items():
+        n = len(texts)
+        cnt = {}
+        for t in texts:
+            lines = [l.strip() for l in t.split("\n") if l.strip()]
+            if not lines:
+                continue
+            for l in {lines[0], lines[-1]}:
+                k = line_flat(l)
+                if len(k) >= 6:
+                    cnt[k] = cnt.get(k, 0) + 1
+        out[ch] = {k for k, c in cnt.items() if c >= 3 and c >= 0.1 * n}
+    return out
+
+
+def build_ctx(handles, state, corpus, block_re, cores):
+    names_full, names_words = set(), set()
+    for h in handles:
+        low = state.get(h, {}).get("title", "").lower()
+        full = re.sub(r"[^a-z0-9]", "", low)
+        if len(full) >= 7:
+            names_full.add(full)
+        for w in re.findall(r"[a-z]+", low):
+            if len(w) >= 5 and w not in GENERIC and w not in COMMON:
+                names_words.add(w)
+    boiler = build_boiler(corpus)
+    return {"cores": cores, "block_re": block_re, "names_full": names_full,
+            "names_words": names_words, "boiler": boiler}
+
+
+def clean_text(text, ch, ctx):
     good = []
+    boil = ctx["boiler"].get(ch, set())
     for line in text.split("\n"):
         l = line.strip()
         if not l:
             continue
         low = l.lower()
-        flat = re.sub(r"[^a-z]", "", low)
-        if BAD.search(l) or block_re.search(low):
+        flat = line_flat(l)
+        if BAD.search(l) or ctx["block_re"].search(low):
             continue
-        if any(c in flat for c in cores):
+        if flat in boil:
+            continue
+        if any(c in flat for c in ctx["cores"]):
+            continue
+        if any(n in flat for n in ctx["names_full"]):
+            continue
+        if set(re.findall(r"[a-z]+", low)) & ctx["names_words"]:
             continue
         good.append(l)
     return "\n".join(good)[:500]
 
 
 def find_price(text):
-    found = []
     pats = [
         r"(?:₹|rs\.?|inr)\s*:?\s*(\d{2,6})",
         r"(\d{2,6})\s*(?:/-|₹|rs\b)",
         r"@\s*(\d{2,5})\b",
         r"(?:price|rate)\s*[:=\-]?\s*(\d{2,6})",
     ]
+    cands, loose = [], []
     for p in pats:
         for m in re.finditer(p, text, re.I):
             v = int(m.group(1))
-            if 20 <= v <= 100000:
-                found.append(v)
-    return min(found) if found else None
+            if not 20 <= v <= 100000:
+                continue
+            loose.append(v)
+            before = text[max(0, m.start() - 14):m.start()].lower()
+            after = text[m.end():m.end() + 10]
+            if re.search(r"mrp|m\.r\.p|moq|qty|size|set of|pack of|box of|"
+                         r"dozen|worth|upto|up to", before):
+                continue
+            if re.match(r"\s*(?:pcs|pc|piece|pieces|pis|mtr|meter|metre|kg|gm|"
+                        r"ml|set|pack|inch|cm|mm|ft)\b", after, re.I):
+                continue
+            cands.append(v)
+    if cands:
+        return min(cands)
+    return min(loose) if loose else None
 
 
-def title_key(text):
-    for line in text.split("\n"):
-        line = line.strip()
-        if line:
-            k = re.sub(r"[^a-z0-9]", "", line.lower())
-            return k if len(k) >= 15 else ""
-    return ""
+def norm_unit(u):
+    u = u.lower()
+    if u == "m" or u.startswith(("mtr", "mt", "meter", "metre")):
+        return "m"
+    if u in ("ft", "feet", "foot"):
+        return "ft"
+    if u.startswith("inch"):
+        return "in"
+    if u.startswith("kg"):
+        return "kg"
+    if u == "g" or u.startswith(("gm", "gram")):
+        return "g"
+    if u == "l" or u.startswith(("ltr", "litre", "liter")):
+        return "l"
+    if u.startswith(("pc", "piece")):
+        return "pc"
+    if u == "w" or u.startswith("watt"):
+        return "w"
+    return u
 
 
-def dhash(url):
+def variant_sig(text):
+    out = set()
+    pat = (r"(\d+(?:\.\d+)?)\s*(mtrs?|meters?|metres?|mts?|cm|mm|ft|feet|foot|"
+           r"inch(?:es)?|kgs?|gms?|grams?|ml|ltrs?|litres?|liters?|pcs|pc|"
+           r"pieces?|pack|set|watts?|mah|gb|m|g|l|w)\b")
+    for m in re.finditer(pat, text, re.I):
+        num = float(m.group(1))
+        u = norm_unit(m.group(2))
+        if u in ("pc", "pack", "set") and num > 24:
+            continue
+        out.add("%g%s" % (num, u))
+    return ",".join(sorted(out))
+
+
+def check_image(url):
     try:
-        im = Image.open(io.BytesIO(get(url))).convert("L").resize((9, 8))
+        im = Image.open(io.BytesIO(get(url)))
+        if min(im.size) < 150:
+            return None
+        im = im.convert("L").resize((9, 8))
         px = list(im.getdata())
         bits = 0
         for r in range(8):
@@ -163,8 +261,12 @@ def dhash(url):
         return None
 
 
-def dist(a, b):
-    return bin(a ^ b).count("1")
+def check_many(urls):
+    urls = list(dict.fromkeys(urls))
+    if not urls:
+        return {}
+    with ThreadPoolExecutor(max_workers=16) as ex:
+        return dict(zip(urls, ex.map(check_image, urls)))
 
 
 def parse_date(s):
@@ -179,6 +281,9 @@ def parse_page(h, page):
     dates = [parse_date(x) for x in
              re.findall(r'<time[^>]*datetime="([^"]+)"', page)]
     dates = [d for d in dates if d]
+    tm0 = re.search(
+        r'tgme_channel_info_header_title[^>]*>\s*(?:<span[^>]*>)?(.*?)</', page, re.S)
+    title = clean(tm0.group(1)) if tm0 else ""
     items = []
     for b in page.split("tgme_widget_message_wrap")[1:]:
         m = re.search(r'data-post="[^"/]+/(\d+)"', b)
@@ -190,21 +295,26 @@ def parse_page(h, page):
         videos = re.findall(r'<video[^>]*src="([^"]+)"', b)
         thumbs = re.findall(
             r"tgme_widget_message_video_thumb[^>]*background-image:url\('([^']+)'\)", b)
-        tm = re.search(
-            r'<div class="tgme_widget_message_text[^"]*"[^>]*>(.*?)</div>', b, re.S)
-        text = clean(tm.group(1)) if tm else ""
+        text = ""
+        for cls, inner in re.findall(
+                r'<div class="(tgme_widget_message_text[^"]*)"[^>]*>(.*?)</div>', b, re.S):
+            if "reply" in cls:
+                continue
+            text = clean(inner)
+            break
         dm = re.search(r'<time[^>]*datetime="([^"]+)"', b)
         date = dm.group(1) if dm else ""
         if not images and thumbs:
             images = thumbs
+        images = [html.unescape(u) for u in images]
         if not images:
             continue
         items.append({
             "id": "%s/%d" % (h, num), "num": num, "channel": h,
             "text": text, "images": images,
-            "video": videos[0] if videos else "", "date": date,
+            "video": html.unescape(videos[0]) if videos else "", "date": date,
         })
-    return {"items": items,
+    return {"items": items, "title": title,
             "min": min(nums) if nums else None,
             "max": max(nums) if nums else None,
             "oldest": min(dates) if dates else None}
@@ -212,7 +322,7 @@ def parse_page(h, page):
 
 def close(a, b):
     da, db = parse_date(a), parse_date(b)
-    return bool(da and db and abs((da - db).total_seconds()) <= 120)
+    return bool(da and db and abs((da - db).total_seconds()) <= 90)
 
 
 def group(items, h):
@@ -252,6 +362,7 @@ def make_id(pid):
 
 def main():
     st = load_settings()
+    now_ts = int(time.time())
     limit = datetime.now(timezone.utc) - timedelta(days=int(st["days"]))
     os.makedirs("site", exist_ok=True)
     os.makedirs("data", exist_ok=True)
@@ -271,11 +382,13 @@ def main():
     if os.path.exists(RAW):
         try:
             raw = json.load(open(RAW, encoding="utf-8"))
-            if raw.get("version") == 2:
+            if raw.get("version") == VERSION:
                 products = raw["products"]
                 skipped = dict.fromkeys(raw.get("skipped", []))
                 state = raw.get("state", {})
                 pending = raw.get("pending", [])
+            else:
+                print("Old data format found, starting fresh")
         except Exception as e:
             print("raw.json problem:", e)
 
@@ -283,6 +396,11 @@ def main():
     for p in products:
         p["sources"] = {c: s for c, s in p["sources"].items() if c.lower() in hset}
     products = [p for p in products if p["sources"]]
+
+    index = {}
+    for p in products:
+        for hh in p["hashes"]:
+            index[(hh, p.get("ntext", ""), p.get("sig", ""))] = p
 
     seen = set(skipped.keys())
     for p in products:
@@ -304,6 +422,8 @@ def main():
                 failed.append(h)
                 break
             r = parse_page(h, page)
+            if r["title"]:
+                s["title"] = r["title"]
             if r["min"] is None:
                 if before is None:
                     print(h, "has no public posts")
@@ -328,12 +448,12 @@ def main():
 
     fails = {}
     while elapsed() < FETCH_LIMIT:
-        todo = [h for h in handles
-                if not state[h]["done"] and state[h]["cursor"]
-                and fails.get(h, 0) < 3]
-        if not todo:
+        todo_ch = [h for h in handles
+                   if not state[h]["done"] and state[h]["cursor"]
+                   and fails.get(h, 0) < 3]
+        if not todo_ch:
             break
-        for h in todo:
+        for h in todo_ch:
             if elapsed() >= FETCH_LIMIT:
                 break
             s = state[h]
@@ -358,54 +478,101 @@ def main():
             pending.append(g)
             seen.update(g["posts"])
 
+    corpus = {}
+    for p in products:
+        ch = p.get("raw_ch") or next(iter(p["sources"]))
+        corpus.setdefault(ch, []).append(p["raw"])
+    for g in pending:
+        corpus.setdefault(g["channel"], []).append(g["text"])
+    ctx = build_ctx(handles, state, corpus, block_re, cores)
+
     pending.sort(key=lambda g: g["date"], reverse=True)
-    rest = []
-    new_count = upd_count = 0
-    for i, g in enumerate(pending):
-        if elapsed() > WORK_LIMIT:
-            rest = pending[i:]
-            break
+    todo = []
+    for g in pending:
         d = parse_date(g["date"])
         price = find_price(g["text"])
         if not d or d < limit or price is None or not g["images"]:
             for pp in g["posts"]:
                 skipped[pp] = None
             continue
-        ctext = clean_text(g["text"], cores, block_re)
-        h = dhash(g["images"][0])
-        key = title_key(ctext)
-        src = {"price": price, "date": g["date"], "post": g["posts"][0]}
-        match = None
-        for p in products:
-            if h is not None and any(dist(h, x) <= 10 for x in p["hashes"]):
-                match = p
-                break
-            if key and key == p.get("key"):
-                match = p
-                break
-        if match:
-            old = match["sources"].get(g["channel"])
-            if not old or parse_date(g["date"]) >= parse_date(old["date"]):
-                match["sources"][g["channel"]] = src
-            match["posts"] += g["posts"]
-            if h is not None and h not in match["hashes"]:
-                match["hashes"] = (match["hashes"] + [h])[-4:]
-            if len(g["images"]) > len(match["images"]):
-                match["images"] = g["images"]
-            if g["video"] and not match["video"]:
-                match["video"] = g["video"]
-            if len(g["text"]) > len(match["raw"]):
-                match["raw"] = g["text"][:1500]
-            upd_count += 1
-        else:
-            products.append({
-                "pid": g["posts"][0], "hashes": [h] if h is not None else [],
-                "key": key, "raw": g["text"][:1500],
-                "images": g["images"], "video": g["video"],
-                "sources": {g["channel"]: src}, "posts": list(g["posts"]),
-            })
-            new_count += 1
+        g["price"] = price
+        todo.append(g)
+
+    rest = []
+    new_count = upd_count = bad_imgs = 0
+    i = 0
+    while i < len(todo):
+        if elapsed() > WORK_LIMIT:
+            rest = todo[i:]
+            break
+        batch = todo[i:i + BATCH]
+        i += BATCH
+        res = check_many([u for g in batch for u in g["images"]])
+        for g in batch:
+            valid = [u for u in g["images"] if res.get(u) is not None]
+            if not valid:
+                for pp in g["posts"]:
+                    skipped[pp] = None
+                bad_imgs += 1
+                continue
+            h = res[valid[0]]
+            g["images"] = valid
+            ctext = clean_text(g["text"], g["channel"], ctx)
+            ntext = re.sub(r"\s+", " ", ctext.lower()).strip()
+            sig = variant_sig(g["text"])
+            k = (h, ntext, sig)
+            src = {"price": g["price"], "date": g["date"], "post": g["posts"][0]}
+            match = index.get(k)
+            if match:
+                prev = match.get("bdate") or max(
+                    s["date"] for s in match["sources"].values())
+                old = match["sources"].get(g["channel"])
+                if not old or parse_date(g["date"]) >= parse_date(old["date"]):
+                    match["sources"][g["channel"]] = src
+                match["posts"] += g["posts"]
+                if parse_date(g["date"]) >= parse_date(prev):
+                    match["images"] = g["images"]
+                    match["video"] = g["video"]
+                    match["raw"] = g["text"][:1500]
+                    match["raw_ch"] = g["channel"]
+                    match["bdate"] = g["date"]
+                    match["chk"] = now_ts
+                    match["fail"] = 0
+                upd_count += 1
+            else:
+                p = {
+                    "pid": g["posts"][0], "hashes": [h], "ntext": ntext,
+                    "sig": sig, "raw": g["text"][:1500], "raw_ch": g["channel"],
+                    "images": g["images"], "video": g["video"],
+                    "bdate": g["date"], "chk": now_ts, "fail": 0,
+                    "sources": {g["channel"]: src}, "posts": list(g["posts"]),
+                }
+                products.append(p)
+                index[k] = p
+                new_count += 1
     pending = rest
+
+    removed = 0
+    if elapsed() < WORK_LIMIT and products:
+        order = sorted(products, key=lambda p: p.get("chk", 0))[:RECHECK]
+        res = check_many([p["images"][0] for p in order])
+        for p in order:
+            p["chk"] = now_ts
+            if res.get(p["images"][0]) is not None:
+                p["fail"] = 0
+                continue
+            p["fail"] = p.get("fail", 0) + 1
+            if p["fail"] >= 2:
+                alt = check_many(p["images"][1:])
+                good = [u for u in p["images"][1:] if alt.get(u) is not None]
+                if good:
+                    p["images"] = good
+                    p["fail"] = 0
+                else:
+                    p["dead"] = True
+        n0 = len(products)
+        products = [p for p in products if not p.get("dead")]
+        removed = n0 - len(products)
 
     for p in products:
         p["sources"] = {c: s for c, s in p["sources"].items()
@@ -420,7 +587,8 @@ def main():
         if sell is None:
             hidden += 1
             continue
-        text = clean_text(p["raw"], cores, block_re)
+        ch = p.get("raw_ch") or next(iter(p["sources"]))
+        text = clean_text(p["raw"], ch, ctx)
         title = text.split("\n")[0][:70] if text else "New Arrival"
         out.append({
             "id": make_id(p["pid"]), "title": title, "text": text,
@@ -429,7 +597,7 @@ def main():
         })
     out.sort(key=lambda x: x["date"], reverse=True)
 
-    json.dump({"version": 2, "products": products,
+    json.dump({"version": VERSION, "products": products,
                "skipped": list(skipped.keys())[-20000:],
                "state": state, "pending": pending},
               open(RAW, "w", encoding="utf-8"), ensure_ascii=False)
@@ -439,10 +607,14 @@ def main():
               open(CONF, "w", encoding="utf-8"), ensure_ascii=False)
 
     backlog = len([h for h in handles if not state[h]["done"]])
-    print("DONE. new:", new_count, "merged-duplicates:", upd_count,
+    boiler_n = sum(len(v) for v in ctx["boiler"].values())
+    print("DONE. new:", new_count, "exact-duplicates-merged:", upd_count,
           "live:", len(out), "hidden(>2000):", hidden,
+          "| skipped(no working photo):", bad_imgs,
+          "| removed(dead photo):", removed,
           "| waiting to process:", len(pending),
           "| channels still backfilling:", backlog,
+          "| footer/name lines auto-blocked:", boiler_n,
           "| failed:", len(failed),
           "| minutes used:", round(elapsed() / 60, 1))
     if pending or backlog:
