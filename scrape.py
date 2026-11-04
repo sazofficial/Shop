@@ -64,6 +64,20 @@ BAD = re.compile(
     re.I,
 )
 
+SECRET = re.compile(
+    r"(AKIA[0-9A-Z]{16}|AKLT[0-9A-Za-z]{16,}|ASIA[0-9A-Z]{16}|"
+    r"ghp_[0-9A-Za-z]{36}|gho_[0-9A-Za-z]{36}|ghs_[0-9A-Za-z]{36}|"
+    r"ghu_[0-9A-Za-z]{36}|github_pat_[0-9A-Za-z_]{22,}|"
+    r"sk_live_[0-9A-Za-z]{24,}|xox[bpas]-[0-9A-Za-z-]{10,}|"
+    r"AIza[0-9A-Za-z\-_]{35})"
+)
+
+
+def redact(t):
+    if not t:
+        return t
+    return SECRET.sub("[hidden]", t)
+
 
 def elapsed():
     return time.time() - START
@@ -180,9 +194,7 @@ def clean_text(text, ch, ctx):
             continue
         good.append(l)
     return "\n".join(good)[:500]
-
-
-def find_price(text):
+    def find_price(text):
     pats = [
         r"(?:₹|rs\.?|inr)\s*:?\s*(\d{2,6})",
         r"(\d{2,6})\s*(?:/-|₹|rs\b)",
@@ -358,9 +370,7 @@ def group(items, h):
 
 def make_id(pid):
     return "p" + hashlib.sha1(pid.encode()).hexdigest()[:8]
-
-
-def main():
+    def main():
     st = load_settings()
     now_ts = int(time.time())
     limit = datetime.now(timezone.utc) - timedelta(days=int(st["days"]))
@@ -489,6 +499,7 @@ def main():
     pending.sort(key=lambda g: g["date"], reverse=True)
     todo = []
     for g in pending:
+        g["text"] = redact(g["text"])
         d = parse_date(g["date"])
         price = find_price(g["text"])
         if not d or d < limit or price is None or not g["images"]:
@@ -596,6 +607,14 @@ def main():
             "date": latest["date"],
         })
     out.sort(key=lambda x: x["date"], reverse=True)
+
+    for p in products:
+        p["raw"] = redact(p.get("raw", ""))
+    for g in pending:
+        g["text"] = redact(g.get("text", ""))
+    for o in out:
+        o["text"] = redact(o.get("text", ""))
+        o["title"] = redact(o.get("title", ""))
 
     json.dump({"version": VERSION, "products": products,
                "skipped": list(skipped.keys())[-20000:],
