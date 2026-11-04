@@ -72,7 +72,17 @@ SECRET = re.compile(
     r"AIza[0-9A-Za-z\-_]{35})"
 )
 
-CODE_PREFIX = re.compile(r"^\s*[A-Za-z]{2,4}[\s\-_:#|]*\d{1,5}\s*[\-_:|]?\s*")
+CODE_PREFIX = re.compile(
+    r"^\s*(?:[A-Za-z]{2,5}[\s\-_:#|]+\d{1,5}"
+    r"|[A-Za-z]{2,5}\d{1,5}"
+    r"|[A-Za-z]{2,5}[-]?[A-Za-z]\d{1,5})"
+    r"\s*[\-_:|]?\s*"
+)
+
+BRAND_PREFIX = re.compile(
+    r"^\s*(?:a2z\s*mart|a2zmart|a2z)\s*[\-_:|]?\s*",
+    re.I,
+)
 
 
 def redact(t):
@@ -200,7 +210,14 @@ def clean_text(text, ch, ctx):
 
 def find_price(text):
     def _valid(m):
-        before = text[max(0, m.start() - 20):m.start()].lower()
+        start = m.start()
+        before_char = text[start - 1] if start > 0 else ""
+        before2 = text[start - 2] if start > 1 else ""
+        if before_char.isalpha():
+            return False
+        if before_char == "-" and before2.isalpha():
+            return False
+        before = text[max(0, start - 20):start].lower()
         after = text[m.end():m.end() + 12]
         if re.search(r"(?:mrp|m\.r\.p|moq|qty|minimum|set\s+of|pack\s+of|"
                      r"box\s+of|dozen|worth|upto|up\s*to)", before):
@@ -210,29 +227,32 @@ def find_price(text):
             return False
         return True
 
-    def _collect(pats):
+    def _collect(pats, vmin=4, vmax=100000):
         vals = []
         for p in pats:
             for m in re.finditer(p, text, re.I):
-                v = int(m.group(1))
-                if 20 <= v <= 100000 and _valid(m):
+                try:
+                    v = int(m.group(1))
+                except Exception:
+                    continue
+                if vmin <= v <= vmax and _valid(m):
                     vals.append(v)
         return vals
 
-    for tier in (
-        [
-            r"(?:₹|rs\.?|inr)\s*:?\s*(\d{2,6})",
-            r"(\d{2,6})\s*(?:/-|₹|rs\b|rupees?\b)",
-        ],
-        [
-            r"(?:price|rate|selling|our\s*price)\s*[:=\-]?\s*(?:₹|rs\.?)?\s*(\d{2,6})",
-            r"\b(\d{2,6})\s*(?:each|per\s*(?:pc|piece|pcs?|kg|mtr))\b",
-        ],
-        [
+    for pats, vmin in (
+        ([
+            r"(?:₹|rs\.?|inr)\s*:?\s*(\d{1,6})",
+            r"(\d{1,6})\s*(?:/-|₹|rs\b|rupees?\b)",
+        ], 4),
+        ([
+            r"(?:price|rate|selling|our\s*price)\s*[:=\-]?\s*(?:₹|rs\.?)?\s*(\d{1,6})",
+            r"\b(\d{1,6})\s*(?:each|per\s*(?:pc|piece|pcs?|kg|mtr))\b",
+        ], 10),
+        ([
             r"@\s*(\d{2,5})\b",
-        ],
+        ], 10),
     ):
-        vals = _collect(tier)
+        vals = _collect(pats, vmin)
         if vals:
             return min(vals)
     return None
@@ -243,7 +263,9 @@ def clean_name(text):
     if not lines:
         return "New Arrival"
     for line in lines:
-        stripped = CODE_PREFIX.sub("", line).strip()
+        stripped = BRAND_PREFIX.sub("", line).strip()
+        stripped = CODE_PREFIX.sub("", stripped).strip()
+        stripped = stripped.strip(" -:|#")
         if len(stripped) >= 3:
             return stripped[:70]
     return lines[0][:70]
@@ -438,17 +460,18 @@ def main():
         srcs = p.get("sources", {})
         txt = p.get("raw", "")
         ch = p.get("raw_ch")
-        if not srcs or not txt or ch not in srcs:
+        if not srcs or not txt:
             continue
         try:
-            latest = max(srcs, key=lambda c: parse_date(srcs[c].get("date", "")) or fallback_dt)
+            latest_key = max(
+                srcs,
+                key=lambda c: parse_date(srcs[c].get("date", "")) or fallback_dt,
+            )
         except Exception:
-            latest = ch
-        if latest != ch:
-            continue
+            latest_key = next(iter(srcs))
         new_p = find_price(txt)
-        if new_p and new_p != (srcs[ch].get("price") or 0):
-            srcs[ch]["price"] = new_p
+        if new_p and new_p != (srcs[latest_key].get("price") or 0):
+            srcs[latest_key]["price"] = new_p
             price_fixed += 1
     print("price-migration fixed:", price_fixed, "products")
 
@@ -654,10 +677,10 @@ def main():
         out.append({
             "id": make_id(p["pid"]), "title": title, "text": text,
             "images": p["images"], "video": p["video"], "price": sell,
-            "date": latest["date"],
+            "date": latest["date"], "wholesaler": ch,
         })
     out.sort(key=lambda x: x["date"], reverse=True)
-
+    
     for p in products:
         p["raw"] = redact(p.get("raw", ""))
     for g in pending:
