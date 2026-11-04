@@ -194,7 +194,9 @@ def clean_text(text, ch, ctx):
             continue
         good.append(l)
     return "\n".join(good)[:500]
-    def find_price(text):
+
+
+def find_price(text):
     pats = [
         r"(?:₹|rs\.?|inr)\s*:?\s*(\d{2,6})",
         r"(\d{2,6})\s*(?:/-|₹|rs\b)",
