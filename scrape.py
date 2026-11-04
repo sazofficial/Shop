@@ -372,7 +372,10 @@ def group(items, h):
 
 def make_id(pid):
     return "p" + hashlib.sha1(pid.encode()).hexdigest()[:8]
-    def main():
+
+
+def main():
+
     st = load_settings()
     now_ts = int(time.time())
     limit = datetime.now(timezone.utc) - timedelta(days=int(st["days"]))
