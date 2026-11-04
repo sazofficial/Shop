@@ -29,7 +29,7 @@ header{background:var(--ink);color:#fff;position:sticky;top:0;z-index:20}
 @media(min-width:980px){#grid,#grid2{grid-template-columns:repeat(4,1fr)}}
 .card{background:#fff;border:1px solid var(--line);border-radius:12px;overflow:hidden;display:block;transition:box-shadow .2s,transform .2s}
 .card:hover{box-shadow:0 8px 24px #0f172a14;transform:translateY(-2px)}
-.im{aspect-ratio:1;background:#eef2f7}
+.im{aspect-ratio:1;background:#eef2f7;position:relative}
 .im img{width:100%;height:100%;object-fit:cover;display:block}
 .cb{padding:10px 12px 12px}
 .ct{font-size:13.5px;height:38px;overflow:hidden;color:#1e293b}
@@ -91,6 +91,17 @@ label{display:block;font-size:13px;font-weight:600;margin:12px 0 5px;color:#3341
 .okc{width:72px;height:72px;border-radius:50%;background:var(--ok);color:#fff;font-size:38px;display:flex;align-items:center;justify-content:center;margin:24px auto 14px}
 .muted{color:var(--muted);font-size:14.5px}
 .wh{display:inline-block;background:#fef3c7;color:#92400e;border:1px solid #fbbf24;border-radius:6px;padding:4px 10px;font-size:12.5px;font-weight:600;margin:0 0 14px}
+.cats{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:10px 0 14px}
+@media(min-width:560px){.cats{grid-template-columns:repeat(6,1fr)}}
+@media(min-width:900px){.cats{grid-template-columns:repeat(11,1fr)}}
+.cat{display:flex;flex-direction:column;align-items:center;gap:3px;padding:9px 3px;border:1px solid var(--line);background:#fff;border-radius:12px;cursor:pointer;text-align:center}
+.cat:hover{border-color:var(--accent)}
+.cat.on{background:var(--accent);border-color:var(--accent);color:#fff}
+.cat .em{font-size:22px;line-height:1}
+.cat .nm{font-size:10px;line-height:1.15;font-weight:600;color:#475569}
+.cat.on .nm{color:#fff}
+.cbadge{position:absolute;top:8px;left:8px;background:#0f172ac9;color:#fff;font-size:10.5px;font-weight:600;padding:3px 8px;border-radius:20px}
+.cchip{display:inline-block;background:#eff6ff;color:var(--accent);font-size:12px;font-weight:600;padding:4px 10px;border-radius:20px;margin:0 0 8px}
 footer{text-align:center;color:var(--muted);font-size:12.5px;padding:24px 10px 30px}
 </style>
 </head>
@@ -108,6 +119,7 @@ footer{text-align:center;color:var(--muted);font-size:12.5px;padding:24px 10px 3
 <option value="h">Price: High to Low</option>
 </select>
 </div>
+<div class="cats" id="cats"></div>
 <div class="count" id="count">Loading products...</div>
 <div id="grid"></div>
 <div id="more"></div>
@@ -119,7 +131,18 @@ footer{text-align:center;color:var(--muted);font-size:12.5px;padding:24px 10px 3
 <footer id="foot"></footer>
 
 <script>
-var P=[],C={shop_name:"Shop",whatsapp:"",order_url:""},L=[],N=24,CUR=null,QTY=1,homeY=0,LAST=null,READY=false,NAV=0;
+var P=[],C={shop_name:"Shop",whatsapp:"",order_url:""},L=[],N=24,CUR=null,QTY=1,homeY=0,LAST=null,READY=false,NAV=0,CAT="All";
+var CATS=[{k:"All",em:"🛒",n:"All"},
+{k:"Fashion",em:"👕",n:"Fashion"},
+{k:"Beauty",em:"💄",n:"Beauty"},
+{k:"Home",em:"🏠",n:"Home"},
+{k:"Electronics",em:"📱",n:"Electronics"},
+{k:"Jewellery",em:"💎",n:"Jewellery"},
+{k:"Bags",em:"👜",n:"Bags"},
+{k:"Footwear",em:"👟",n:"Footwear"},
+{k:"Watches",em:"⌚",n:"Watches"},
+{k:"Kids",em:"🧸",n:"Kids"},
+{k:"Other",em:"📦",n:"Other"}];
 var STATES=["Andhra Pradesh","Arunachal Pradesh","Assam","Bihar","Chhattisgarh","Goa","Gujarat","Haryana","Himachal Pradesh","Jharkhand","Karnataka","Kerala","Madhya Pradesh","Maharashtra","Manipur","Meghalaya","Mizoram","Nagaland","Odisha","Punjab","Rajasthan","Sikkim","Tamil Nadu","Telangana","Tripura","Uttar Pradesh","Uttarakhand","West Bengal","Delhi","Jammu and Kashmir","Ladakh","Chandigarh","Puducherry","Andaman and Nicobar Islands","Dadra and Nagar Haveli and Daman and Diu","Lakshadweep"];
 
 function $(i){return document.getElementById(i)}
@@ -129,24 +152,37 @@ function load(u){return fetch(u+"?v="+Date.now()).then(function(r){if(!r.ok)thro
 function find(id){for(var i=0;i<P.length;i++)if(P[i].id===id)return P[i];return null}
 
 function card(p,keep){
-  return '<a class="card" href="#p/'+p.id+'"'+(keep?'':' onclick="homeY=window.scrollY"')+'><div class="im"><img loading="lazy" alt="'+esc(p.title)+'" src="'+esc(p.images[0])+'" onerror="this.style.opacity=0"></div><div class="cb"><div class="ct">'+esc(p.title)+'</div><div class="cp">'+inr(p.price)+'</div><div class="tag">Cash on Delivery</div></div></a>';
+  return '<a class="card" href="#p/'+p.id+'"'+(keep?'':' onclick="homeY=window.scrollY"')+'><div class="im"><img loading="lazy" alt="'+esc(p.title)+'" src="'+esc(p.images[0])+'" onerror="this.style.opacity=0">'+(p.category?'<span class="cbadge">'+esc(p.category)+'</span>':"")+'</div><div class="cb"><div class="ct">'+esc(p.title)+'</div><div class="cp">'+inr(p.price)+'</div><div class="tag">Cash on Delivery</div></div></a>';
 }
 
 function apply(){
   var q=$("q").value.toLowerCase().trim(),s=$("s").value;
-  L=P.filter(function(p){return !q||(p.title+" "+p.text).toLowerCase().indexOf(q)>-1});
+  L=P.filter(function(p){
+    var okq=!q||(p.title+" "+p.text).toLowerCase().indexOf(q)>-1;
+    var okc=CAT==="All"||p.category===CAT;
+    return okq&&okc;
+  });
   if(s==="l")L.sort(function(a,b){return a.price-b.price});
   else if(s==="h")L.sort(function(a,b){return b.price-a.price});
   else L.sort(function(a,b){return a.date<b.date?1:-1});
   N=24;renderGrid();
 }
 function renderGrid(){
+  var ch="";
+  CATS.forEach(function(c){
+    ch+='<button class="cat'+(CAT===c.k?' on':'')+
+        '" onclick="setCat(\''+c.k+'\')">'+
+        '<span class="em">'+c.em+'</span>'+
+        '<span class="nm">'+c.n+'</span></button>';
+  });
+  var ce=$("cats");if(ce)ce.innerHTML=ch;
   var h="";
   L.slice(0,N).forEach(function(p){h+=card(p)});
   $("grid").innerHTML=h||'<div class="empty">No products found.</div>';
   $("count").textContent=L.length+" product"+(L.length===1?"":"s");
   $("more").innerHTML=L.length>N?'<button class="more" onclick="N+=24;renderGrid()">Load more products</button>':"";
 }
+function setCat(k){CAT=k;apply();}
 
 function words(t){var m=t.toLowerCase().match(/[a-z]{4,}/g)||[];return m.filter(function(v,i){return m.indexOf(v)===i})}
 function similar(p){
@@ -188,7 +224,9 @@ function showProduct(p){
   $("product").innerHTML=
     '<div class="wrap"><a class="back" href="#" onclick="goBack();return false">&larr; Back</a>'+
     '<div class="pg"><div><div class="galw"><div class="car" id="car">'+sl.join("")+'</div>'+arrows+'</div>'+dots+'</div>'+
-    '<div class="info"><h1>'+esc(p.title)+'</h1><div class="price">'+inr(p.price)+'</div>'+
+    '<div class="info"><h1>'+esc(p.title)+'</h1>'+
+    (p.category?'<div class="cchip">'+esc(p.category)+'</div>':"")+
+    '<div class="price">'+inr(p.price)+'</div>'+
     '<div class="cod">&#10004; Cash on Delivery available</div>'+
     (location.search.indexOf("saz97")>-1&&p.wholesaler?'<div class="wh">Wholesaler: '+esc(p.wholesaler)+'</div>':"")+
     (p.text?'<div class="desc">'+esc(p.text)+'</div>':"")+
@@ -299,7 +337,7 @@ function start(){
   }).then(function(d){
     P=d;READY=true;apply();route();
   }).catch(function(){
-    $("count").textContent="";
+    $("coount").textContent="";
     $("grid").innerHTML='<div class="empty">Unable to load products. Please try again later.</div>';
   });
 }
