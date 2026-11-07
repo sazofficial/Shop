@@ -34,7 +34,9 @@ jobs:
         run: |
           git config user.name "bot"
           git config user.email "bot@users.noreply.github.com"
-          git add site/products.json
+          git add data/raw.json site/products.json site/config.json
+          git add site/first.json site/light.json
+          git add site/p/
           git diff --cached --quiet || git commit -m "update products"
           git push
 
