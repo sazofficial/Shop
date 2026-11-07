@@ -129,7 +129,6 @@ footer{text-align:center;color:var(--muted);font-size:12.5px;padding:24px 10px 3
 <div id="checkout" class="view"></div>
 <div id="thanks" class="view"></div>
 <footer id="foot"></footer>
-
 <script>
 var P=[],C={shop_name:"Shop",whatsapp:"",order_url:""},L=[],N=24,CUR=null,QTY=1,homeY=0,LAST=null,READY=false,NAV=0,CAT="All";
 var CATS=[{k:"All",em:"🛒",n:"All"},
@@ -313,32 +312,44 @@ function showThanks(){
   document.title="Order placed | "+C.shop_name;
 }
 
+var SH={};
+function expand(m){
+  if(!m||m.indexOf("http")===0)return m;
+  var i=m.indexOf("~"),n=m.slice(0,i);
+  return "https://cdn"+(n==="0"?"":n)+".telesco.pe/file/"+m.slice(i+1);
+}
+function shape(a){return a.map(function(x){return{id:x.i,title:x.t,price:x.p,date:x.d,category:x.c,text:x.k||"",images:[expand(x.m)]}})}
+function loadFull(id){
+  if(!id)return Promise.resolve(null);
+  var k=id.slice(1,3);
+  if(!SH[k])SH[k]=fetch("p/"+k+".json?v="+(C.v||"")).then(function(r){return r.json()});
+  return SH[k].then(function(a){for(var i=0;i<a.length;i++)if(a[i].id===id)return a[i];return null});
+}
 function route(){
   if(!READY)return;
   var h=location.hash.replace(/^#/,""),a=h.split("/"),v=a[0];
-  if(v==="p"&&find(a[1]))showProduct(find(a[1]));
-  else if(v==="c"&&find(a[1]))showCheckout(find(a[1]));
-  else if(v==="thanks"&&LAST)showThanks();
-  else{
-    if(h)history.replaceState(null,"",location.pathname+location.search);
-    showHome();
+  if(v==="p")loadFull(a[1]).then(function(p){p?showProduct(p):showHome()}).catch(showHome);
+  else if(v==="c"){
+    var p=find(a[1]);
+    if(p)showCheckout(p);else loadFull(a[1]).then(function(q){q?showCheckout(q):showHome()}).catch(showHome);
   }
+  else if(v==="thanks"&&LAST)showThanks();
+  else{if(h)history.replaceState(null,"",location.pathname+location.search);showHome()}
 }
 window.addEventListener("hashchange",function(){NAV++;route()});
 
 function start(){
   if("scrollRestoration" in history)history.scrollRestoration="manual";
-  load("config.json").catch(function(){return {}}).then(function(c){
-    for(var k in c)C[k]=c[k];
+  Promise.all([load("config.json").catch(function(){return {}}),load("first.json")]).then(function(r){
+    for(var k in r[0])C[k]=r[0][k];
     $("brand").textContent=C.shop_name;
     document.title=C.shop_name;
     $("foot").textContent="\u00A9 "+new Date().getFullYear()+" "+C.shop_name+". All rights reserved.";
-    return load("products.json");
-  }).then(function(d){
-    P=d;READY=true;apply();route();
-  }).catch(function(){
-    $("coount").textContent="";
-    $("grid").innerHTML='<div class="empty">Unable to load products. Please try again later.</div>';
+    P=shape(r[1]);READY=true;apply();route();
+    return fetch("light.json?v="+(C.v||"")).then(function(x){return x.json()});
+  }).then(function(all){P=shape(all);apply()})
+  .catch(function(){
+    if(!READY){$("count").textContent="";$("grid").innerHTML='<div class="empty">Unable to load products. Please try again later.</div>'}
   });
 }
 start();
