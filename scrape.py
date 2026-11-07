@@ -460,9 +460,7 @@ def group(items, h):
 
 def make_id(pid):
     return "p" + hashlib.sha1(pid.encode()).hexdigest()[:8]
-
-
-def main():
+    def main():
 
     st = load_settings()
     now_ts = int(time.time())
@@ -734,9 +732,42 @@ def main():
                "skipped": list(skipped.keys())[-20000:],
                "state": state, "pending": pending},
               open(RAW, "w", encoding="utf-8"), ensure_ascii=False)
+
     json.dump(out, open(OUT, "w", encoding="utf-8"), ensure_ascii=False)
+
+    import shutil
+    RUN_V = str(int(time.time()))
+    CDN_RE = re.compile(r"^https?://cdn(\d*)\.telesco\.pe/file/")
+
+    def short(u):
+        m = CDN_RE.match(u)
+        if not m:
+            return u
+        return (m.group(1) or "0") + "~" + u[m.end():]
+
+    def dump(o):
+        return json.dumps(o, ensure_ascii=False, separators=(",", ":"))
+
+    prods = [p for p in out if p.get("images")]
+    light = [{"i": p["id"], "t": p["title"][:90], "p": p["price"], "d": p["date"],
+              "c": p.get("category", ""), "m": short(p["images"][0])} for p in prods]
+
+    with open("site/first.json", "w", encoding="utf-8") as f:
+        f.write(dump(light[:48]))
+    with open("site/light.json", "w", encoding="utf-8") as f:
+        f.write(dump(light))
+
+    shutil.rmtree("site/p", ignore_errors=True)
+    os.makedirs("site/p", exist_ok=True)
+    shards = {}
+    for p in prods:
+        shards.setdefault(p["id"][1:3], []).append(p)
+    for k, v in shards.items():
+        with open("site/p/" + k + ".json", "w", encoding="utf-8") as f:
+            f.write(dump(v))
+
     json.dump({"whatsapp": st["whatsapp"], "shop_name": st["shop_name"],
-               "order_url": st["order_url"]},
+               "order_url": st["order_url"], "v": RUN_V},
               open(CONF, "w", encoding="utf-8"), ensure_ascii=False)
 
     backlog = len([h for h in handles if not state[h]["done"]])
