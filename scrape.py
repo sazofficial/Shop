@@ -750,7 +750,9 @@ def make_id(pid):
 
     prods = [p for p in out if p.get("images")]
     light = [{"i": p["id"], "t": p["title"][:90], "p": p["price"], "d": p["date"],
-              "c": p.get("category", ""), "m": short(p["images"][0])} for p in prods]
+              "c": p.get("category", ""), "m": short(p["images"][0]),
+              "k": re.sub(r"\s+", " ", p.get("text", "")).strip().lower()[:120]}
+             for p in prods]
 
     with open("site/first.json", "w", encoding="utf-8") as f:
         f.write(dump(light[:48]))
